@@ -31,6 +31,7 @@ jobs:
             any::shiny
             any::bslib
             any::jsonlite
+            any::rhandsontable
             any::lactater
             any::dplyr
             any::ggplot2
