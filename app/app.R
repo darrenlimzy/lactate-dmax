@@ -295,11 +295,18 @@ ui <- page_sidebar(
       ),
       card(full_screen = TRUE, card_header("Lactate curve"),
            plotOutput("curve", height = "480px")),
+      card(full_screen = TRUE, card_header("Log-log visual inspection (LT1)"),
+           plotOutput("loglog", height = "480px"),
+           p(class = "small text-muted mb-0",
+             "Use this to check that LT1 sits at a sensible break in the data. Grey line:",
+             "the stage data as lactater interpolates them. Black lines: the two-segment fit.",
+             "Shaded: the top 25% of the data, which the fit leaves out.")),
       card(
         card_header("Downloads"),
         div(
           class = "d-flex flex-wrap gap-2",
           downloadButton("dl_curve", "Curve (PNG)"),
+          downloadButton("dl_loglog", "Log-log (PNG)"),
           downloadButton("dl_tables", "Tables (PNG)"),
           downloadButton("dl_csv", "Results (CSV)"),
           downloadButton("dl_json", "Results (JSON)")
@@ -444,6 +451,7 @@ server <- function(input, output, session) {
   output$zone_table <- renderTable(ok()$zones, align = "c")
   output$wmax_line  <- renderUI(p(strong("Wmax: "), round(ok()$Wmax, 1), " W"))
   output$curve      <- renderPlot(ok()$curve_plot, res = 96)
+  output$loglog     <- renderPlot(ok()$loglog_plot, res = 96)
 
   stem <- function() gsub("[^A-Za-z0-9]+", "_", trimws(ok()$meta$athlete))
 
@@ -451,6 +459,11 @@ server <- function(input, output, session) {
     filename = function() paste0(stem(), "_lactate_curve.png"),
     content = function(file)
       ggsave(file, ok()$curve_plot, width = 10, height = 6, dpi = 200, bg = "white")
+  )
+  output$dl_loglog <- downloadHandler(
+    filename = function() paste0(stem(), "_loglog.png"),
+    content = function(file)
+      ggsave(file, ok()$loglog_plot, width = 10, height = 6, dpi = 200, bg = "white")
   )
   output$dl_tables <- downloadHandler(
     filename = function() paste0(stem(), "_lactate_tables.png"),

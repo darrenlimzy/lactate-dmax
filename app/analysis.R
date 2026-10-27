@@ -275,7 +275,10 @@ analyse_step_test <- function(df_full, athlete_name, hr_max, Wmax,
     heights = c(1, 1.4)
   )
 
+  loglog <- loglog_inspection(df, athlete_name, LT1_power, loglog_restrainer = 0.75)
+
   list(
+    loglog_plot     = loglog,
     thresholds      = thresholds,
     threshold_table = threshold_table,
     zones           = zones,
@@ -284,6 +287,79 @@ analyse_step_test <- function(df_full, athlete_name, hr_max, Wmax,
     curve_plot      = p,
     tables_grob     = tables_combined
   )
+}
+
+# ----------------------------
+# Log-log visual inspection (LT1)
+# ----------------------------
+# Rebuilds the fit lactater uses for the Log-log method (lactater
+# 0.2.0, method_loglog): the stages without the baseline, linearly
+# interpolated every 0.1 W, log-transformed, the first 75% kept
+# (loglog_restrainer), then a two-segment linear fit (segmented).
+# The breakpoint of that fit is LT1.
+loglog_inspection <- function(df, athlete_name, LT1_power, loglog_restrainer = 0.75) {
+  prepared <- lactater:::prepare_data(
+    .data = df, intensity_column = intensity, lactate_column = lactate,
+    heart_rate_column = heart_rate
+  )
+  fit_prepared <- lactater:::prepare_fit(
+    prepared, fit = "3rd degree polynomial", include_baseline = FALSE, sport = "cycling"
+  )
+  interpolated <- fit_prepared$data_interpolated[[1]] %>%
+    dplyr::filter(intensity > 0)
+  logged <- interpolated %>%
+    dplyr::mutate(log_intensity = log(intensity), log_lactate = log(lactate))
+  used <- logged %>% dplyr::slice(seq(loglog_restrainer * dplyr::n()))
+
+  linear_fit    <- lm(log_lactate ~ log_intensity, data = used)
+  segmented_fit <- segmented::segmented(
+    obj = linear_fit, npsi = 1, control = segmented::seg.control(it.max = 1000)
+  )
+  used$fitted <- exp(predict(segmented_fit))
+  cutoff <- max(used$intensity)
+  lt1_lactate <- exp(predict(segmented_fit, newdata = data.frame(log_intensity = log(LT1_power))))
+
+  stages <- df %>% filter(step > 0)
+  x_range <- range(c(stages$intensity, interpolated$intensity))
+  y_range <- range(c(stages$lactate, interpolated$lactate, used$fitted))
+
+  ggplot() +
+    # Part of the curve left out of the fit (loglog_restrainer)
+    annotate("rect", xmin = cutoff, xmax = x_range[2] * 1.1,
+             ymin = y_range[1] / 2, ymax = y_range[2] * 2,
+             fill = "grey85", alpha = 0.5) +
+    annotate("text", x = cutoff, y = y_range[1], hjust = -0.05, vjust = 0,
+             size = 3.3, colour = "grey30",
+             label = paste0("Not used in the fit\n(top ", round((1 - loglog_restrainer) * 100), "% of the data)")) +
+    # Interpolated stage data
+    geom_line(data = logged, aes(x = intensity, y = lactate),
+              colour = "grey55", linewidth = 0.6) +
+    # Two-segment fit
+    geom_line(data = used, aes(x = intensity, y = fitted),
+              colour = "grey10", linewidth = 1) +
+    # Measured stages (partial stage hollow, as on the lactate curve)
+    geom_point(data = stages, aes(x = intensity, y = lactate, shape = is_partial), size = 2) +
+    scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+    # Breakpoint = LT1
+    geom_vline(xintercept = LT1_power, linetype = "dashed", linewidth = 0.8, colour = "grey15") +
+    annotate("point", x = LT1_power, y = lt1_lactate, size = 3) +
+    annotate("label", x = LT1_power, y = y_range[2], vjust = 1, hjust = 1.08,
+             label = paste0("LT1 = ", round(LT1_power, 1), " W"),
+             fontface = "bold", size = 4, label.size = 0, fill = "white") +
+    scale_x_log10(breaks = scales::breaks_pretty(8)) +
+    scale_y_log10(breaks = scales::breaks_pretty(8)) +
+    coord_cartesian(xlim = x_range * c(0.97, 1.02), ylim = y_range * c(0.95, 1.05)) +
+    labs(
+      x = "Power (W, log scale)",
+      y = "Blood lactate (mmol/L, log scale)",
+      title = paste0("Log-log visual inspection — ", athlete_name),
+      subtitle = paste0(
+        "LT1 = breakpoint of a two-segment fit of log(lactate) on log(power) ",
+        "(first ", round(loglog_restrainer * 100), "% of the data)"
+      )
+    ) +
+    theme_light() +
+    theme(legend.position = "none")
 }
 
 # Same structure as the canonical script's lactate_results.json
