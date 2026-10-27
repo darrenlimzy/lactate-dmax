@@ -6,48 +6,68 @@
 library(shiny)
 library(bslib)
 library(jsonlite)
+library(rhandsontable)
 source("analysis.R")
 
-example_data <- paste(
-  "step\tlength_min\tpower_w\tlactate\thr\tpartial",
-  "0\t0\t0\t1.1\t72\tN",
-  "1\t4\t100\t1.0\t112\tN",
-  "2\t4\t125\t0.9\t119\tN",
-  "3\t4\t150\t1.0\t127\tN",
-  "4\t4\t175\t1.2\t136\tN",
-  "5\t4\t200\t1.5\t145\tN",
-  "6\t4\t225\t2.1\t155\tN",
-  "7\t4\t250\t3.0\t165\tN",
-  "8\t4\t275\t4.6\t175\tN",
-  "9\t4\t300\t7.2\t185\tN",
-  "10\t4\t\t9.1\t190\tY",
-  sep = "\n"
+# Grid columns as shown to the user, and the names used in the code
+grid_cols <- c("Step", "Stage length (s)", "Power (W)", "Lactate (mmol/L)",
+               "HR (bpm)", "Partial *")
+grid_vars <- c("step", "length_s", "power_w", "lactate", "hr", "partial")
+
+example_grid <- data.frame(
+  step     = 0:10,
+  length_s = c(0, rep(240, 10)),
+  power_w  = c(0, 100, 125, 150, 175, 200, 225, 250, 275, 300, NA),
+  lactate  = c(1.1, 1.0, 0.9, 1.0, 1.2, 1.5, 2.1, 3.0, 4.6, 7.2, 9.1),
+  hr       = c(72, 112, 119, 127, 136, 145, 155, 165, 175, 185, 190),
+  partial  = c(rep(FALSE, 10), TRUE)
 )
 
-# Reads pasted text (tabs from Excel, or commas) into the df_full shape
-parse_steps <- function(txt) {
-  txt <- trimws(txt)
-  if (!nzchar(txt)) stop("Paste the stage data first.")
+blank_grid <- data.frame(
+  step = c(0, 1:8), length_s = c(0, rep(NA, 8)), power_w = c(0, rep(NA, 8)),
+  lactate = NA_real_, hr = NA_real_, partial = FALSE
+)
+
+# Reads a CSV (template layout, or tab-separated from Excel) into the grid
+read_steps_file <- function(path) {
+  txt <- paste(readLines(path, warn = FALSE), collapse = "\n")
   sep <- if (grepl("\t", txt)) "\t" else ","
   raw <- read.table(text = txt, sep = sep, header = TRUE,
                     stringsAsFactors = FALSE, strip.white = TRUE,
                     na.strings = c("", "NA"), blank.lines.skip = TRUE)
   names(raw) <- tolower(trimws(names(raw)))
-  need <- c("step", "length_min", "power_w", "lactate", "hr", "partial")
-  missing <- setdiff(need, names(raw))
+  if (!"length_s" %in% names(raw) && "length_min" %in% names(raw))
+    raw$length_s <- as.numeric(raw$length_min) * 60
+  missing <- setdiff(grid_vars, names(raw))
   if (length(missing))
     stop("Missing column(s): ", paste(missing, collapse = ", "),
-         ". Use the header row from the template.")
-  partial <- toupper(substr(trimws(as.character(raw$partial)), 1, 1)) %in% c("Y", "T")
-  if (sum(partial) > 1) stop("Only one row can be marked partial = Y.")
+         ". Use the header row from the CSV template.")
+  data.frame(
+    step     = as.numeric(raw$step),
+    length_s = as.numeric(raw$length_s),
+    power_w  = suppressWarnings(as.numeric(raw$power_w)),
+    lactate  = as.numeric(raw$lactate),
+    hr       = as.numeric(raw$hr),
+    partial  = toupper(substr(trimws(as.character(raw$partial)), 1, 1)) %in% c("Y", "T", "1")
+  )
+}
+
+# Checks the grid and turns it into the df_full shape
+steps_from_grid <- function(g) {
+  g <- g[!(is.na(g$step) & is.na(g$power_w) & is.na(g$lactate) & is.na(g$hr)), , drop = FALSE]
+  if (!nrow(g)) stop("Enter the stage data first.")
+  partial <- as.logical(g$partial)
+  partial[is.na(partial)] <- FALSE
+  if (sum(partial) > 1) stop("Tick Partial for one row only (the final, unfinished stage).")
   out <- tibble::tibble(
-    step       = as.integer(raw$step),
-    length     = as.integer(raw$length_min),
-    intensity  = suppressWarnings(as.numeric(raw$power_w)),
-    lactate    = as.numeric(raw$lactate),
-    heart_rate = as.integer(round(as.numeric(raw$hr))),
+    step       = as.integer(g$step),
+    length     = as.numeric(g$length_s) / 60,   # minutes, as in the canonical script
+    intensity  = as.numeric(g$power_w),
+    lactate    = as.numeric(g$lactate),
+    heart_rate = as.integer(round(as.numeric(g$hr))),
     is_partial = partial
   )
+  if (anyNA(out$step)) stop("Every row needs a step number.")
   if (anyNA(out$lactate) || anyNA(out$heart_rate))
     stop("Every row needs a lactate and a heart rate value.")
   if (anyNA(out$intensity[!out$is_partial]))
@@ -57,6 +77,20 @@ parse_steps <- function(txt) {
   if (sum(out$step > 0 & !out$is_partial) < 4)
     stop("At least 4 completed stages are needed for a 3rd-degree polynomial fit.")
   out
+}
+
+render_grid <- function(df) {
+  names(df) <- grid_cols
+  rhandsontable(df, rowHeaders = NULL, stretchH = "all", height = 380,
+                minSpareRows = 1, useTypes = TRUE) |>
+    hot_col("Step", format = "0") |>
+    hot_col("Stage length (s)", format = "0") |>
+    hot_col("Power (W)", format = "0") |>
+    hot_col("Lactate (mmol/L)", format = "0.0[0]") |>
+    hot_col("HR (bpm)", format = "0") |>
+    hot_col("Partial *", type = "checkbox", halign = "htCenter") |>
+    hot_cols(colWidths = c(60, 120, 100, 120, 90, 80), halign = "htCenter") |>
+    hot_context_menu(allowRowEdit = TRUE, allowColEdit = FALSE)
 }
 
 # SpexSG brand colours (SpexSG PPT template): red E12E3F, orange F79120
@@ -96,6 +130,11 @@ spex_css <- HTML(sprintf("
   .btn-default:not(.btn-primary):hover { background: %1$s; color: #fff; }
   #run { color: #fff; font-weight: 600; letter-spacing: .02em; }
   table.table th { color: #fff; background: %1$s; }
+  .data-card { max-width: 820px; border-top: 3px solid %1$s; }
+  .handsontable th { background: #F2F2F2; color: #222; font-weight: 600; }
+  .handsontable td { font-variant-numeric: tabular-nums; }
+  .partial-note { margin-top: .75rem; padding: .6rem .8rem; font-size: .85rem; color: #333;
+    background: #FFF5F6; border-left: 3px solid %1$s; border-radius: 4px; }
   @media (max-width: 576px) { .brand-bar img { height: 32px; } .brand-bar .brand-divider { display: none; } }
 ", spex_red, spex_orange))
 
@@ -135,18 +174,46 @@ ui <- page_sidebar(
     id = "results_tabs",
     nav_panel(
       "1. Data",
-      p("Paste the stage data below, straight from Excel (tab-separated) or as CSV.",
-        "Keep the header row. Step 0 is the resting baseline (power 0).",
-        "Mark the final partial stage with partial = Y and leave its power blank:",
-        "it is set to Wmax automatically."),
-      fluidRow(
-        column(6, fileInput("csv", NULL, accept = c(".csv", ".txt", ".tsv"),
-                            buttonLabel = "Load CSV...", placeholder = "or paste below")),
-        column(6, downloadButton("template", "Download CSV template", class = "btn-sm mt-1"))
-      ),
-      textAreaInput("steps", NULL, example_data, width = "100%", height = "330px",
-                    resize = "vertical"),
-      uiOutput("parse_msg")
+      card(
+        class = "data-card",
+        card_header(
+          div(
+            class = "d-flex justify-content-between align-items-center flex-wrap gap-2 w-100",
+            span("Stage data"),
+            div(
+              class = "d-flex flex-wrap gap-2",
+              actionButton("load_example", "Example", class = "btn-sm"),
+              actionButton("clear_grid", "Clear", class = "btn-sm"),
+              downloadButton("template", "CSV template", class = "btn-sm")
+            )
+          )
+        ),
+        card_body(
+          fillable = FALSE,
+          p(class = "small text-muted mb-2",
+            "Type into the grid, or paste straight from Excel: click the top-left cell, then",
+            "Ctrl+V (Cmd+V on a Mac). Right-click a row to insert or delete rows.",
+            "Step 0 is the resting baseline (length 0, power 0)."),
+          rHandsontableOutput("grid"),
+          div(
+            class = "partial-note",
+            strong("* Partial: "),
+            "tick the final stage, the one the athlete started but could not finish.",
+            "Leave its power blank: the app replaces it with Wmax, worked out from the",
+            "sidebar as last completed power + (partial stage power - last completed",
+            "power) x time held / full stage duration. Tick one row only. To keep the",
+            "point on the plot but out of the curve fit, untick",
+            em("Include the partial stage in the curve fit"), "in the sidebar."
+          ),
+          div(
+            class = "mt-3",
+            fileInput("csv", NULL, accept = c(".csv", ".txt", ".tsv"), width = "100%",
+                      buttonLabel = "Load CSV...",
+                      placeholder = "Optional: a CSV saved from the template")
+          ),
+          uiOutput("parse_msg")
+        )
+      )
     ),
     nav_panel(
       "2. Results",
@@ -205,14 +272,40 @@ The data you enter are not sent to any server.
 
 server <- function(input, output, session) {
 
+  # The grid is redrawn only when a new table is loaded; edits made in the
+  # grid come back through input$grid. `current` holds whichever is newest.
+  grid_seed <- reactiveVal(list(df = example_grid, n = 0))
+  current   <- reactiveVal(example_grid)
+  load_grid <- function(df) {
+    grid_seed(list(df = df, n = grid_seed()$n + 1))
+    current(df)
+  }
+
+  output$grid <- renderRHandsontable(render_grid(grid_seed()$df))
+
+  observeEvent(input$grid, {
+    g <- hot_to_r(input$grid)
+    names(g) <- grid_vars
+    current(g)
+  })
+
+  observeEvent(input$load_example, load_grid(example_grid))
+  observeEvent(input$clear_grid, load_grid(blank_grid))
   observeEvent(input$csv, {
-    txt <- paste(readLines(input$csv$datapath, warn = FALSE), collapse = "\n")
-    updateTextAreaInput(session, "steps", value = txt)
+    df <- tryCatch(read_steps_file(input$csv$datapath), error = function(e) e)
+    if (inherits(df, "error"))
+      showNotification(conditionMessage(df), type = "error", duration = 8)
+    else load_grid(df)
   })
 
   output$template <- downloadHandler(
     filename = "lactate_step_test_template.csv",
-    content = function(file) writeLines(gsub("\t", ",", example_data), file)
+    content = function(file) {
+      t <- example_grid
+      t$power_w <- ifelse(is.na(t$power_w), "", t$power_w)
+      t$partial <- ifelse(t$partial, "Y", "N")
+      write.csv(t, file, row.names = FALSE, quote = FALSE)
+    }
   )
 
   wmax <- reactive({
@@ -221,7 +314,7 @@ server <- function(input, output, session) {
                  input$stage_sec, input$held_sec %||% 0)
   })
 
-  parsed <- reactive(tryCatch(parse_steps(input$steps), error = function(e) e))
+  parsed <- reactive(tryCatch(steps_from_grid(current()), error = function(e) e))
 
   output$parse_msg <- renderUI({
     d <- parsed()
@@ -301,8 +394,8 @@ server <- function(input, output, session) {
         apply(r$zones, 1, function(z) paste0('"', z, '"', collapse = ",")),
         "",
         "Data entered",
-        "step,length_min,power_w,lactate,hr,partial",
-        with(r$data, paste(step, length, round(intensity, 1), lactate, heart_rate,
+        "step,length_s,power_w,lactate,hr,partial",
+        with(r$data, paste(step, round(length * 60), round(intensity, 1), lactate, heart_rate,
                            ifelse(is_partial, "Y", "N"), sep = ","))
       )
       writeLines(lines, file)

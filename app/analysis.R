@@ -11,9 +11,8 @@
 # - the plot's left x-limit is min(95, first stage power - 10)
 #   instead of a fixed 95 W, so tests that start below 105 W still
 #   show every point;
-# - SpexSG colours: zones run grey -> orange -> red (brand red
-#   E12E3F, orange F79120), threshold markers and table headers
-#   in brand red.
+# - the tables PNG has SpexSG red (E12E3F) column headers. The
+#   curve plot keeps the canonical colours.
 # =============================================================
 
 library(lactater)
@@ -175,8 +174,13 @@ analyse_step_test <- function(df_full, athlete_name, hr_max, Wmax,
       label_x   = ifelse(is.na(p_hi),
                          (p_lo + x_right) / 2,
                          (p_lo + p_hi) / 2),
-      # SpexSG palette, light to dark with intensity
-      fill      = c("#A6A6A6", "#FFC56B", "#F79120", "#E12E3F", "#8C1D2B")
+      fill      = c("#9E9E9E", "#42A5F5", "#66BB6A", "#FFCA28", "#EF5350")
+      # Zwift-inspired palette:
+      # Z1 Light    - grey   (recovery, Zwift Z1)
+      # Z2 Moderate - blue   (endurance, Zwift Z2)
+      # Z3 Heavy    - green  (tempo, Zwift Z3)
+      # Z4 LT2      - yellow (threshold, Zwift Z4)
+      # Z5 Severe   - red    (combined VO2max + anaerobic, Zwift Z5+Z6)
     )
 
   # ----------------------------
@@ -221,18 +225,14 @@ analyse_step_test <- function(df_full, athlete_name, hr_max, Wmax,
     geom_point(
       data = thresholds,
       aes(x = intensity, y = lactate),
-      size = 3.5,
-      shape = 21,
-      fill = "#E12E3F",
-      color = "white",
-      stroke = 1
+      size = 3
     ) +
     geom_text(
       data = thresholds,
       aes(x = intensity, y = lactate, label = LT),
       size = 4.5,
       fontface = "bold",
-      color = "#E12E3F",
+      color = "grey10",
       vjust = -1
     ) +
     geom_text(
@@ -252,12 +252,7 @@ analyse_step_test <- function(df_full, athlete_name, hr_max, Wmax,
       subtitle = paste0("Wmax = ", round(Wmax, 1), " W (dotted line)")
     ) +
     theme_light() +
-    theme(
-      legend.position = "none",
-      plot.title = element_text(face = "bold", colour = "#222222"),
-      plot.subtitle = element_text(colour = "#595959"),
-      panel.border = element_rect(colour = "#D9D9D9")
-    )
+    theme(legend.position = "none")
 
   # ----------------------------
   # Table grobs
