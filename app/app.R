@@ -59,9 +59,64 @@ parse_steps <- function(txt) {
   out
 }
 
+# SpexSG brand colours (SpexSG PPT template): red E12E3F, orange F79120
+spex_red    <- "#E12E3F"
+spex_orange <- "#F79120"
+
+spex_theme <- bs_theme(
+  version = 5,
+  primary = spex_red,
+  secondary = "#595959",
+  success = "#2E7D32",
+  "link-color" = spex_red,
+  base_font = font_collection("Avenir Next", "Avenir", "Nunito Sans", "Helvetica Neue", "Arial", "sans-serif"),
+  heading_font = font_collection("Avenir Next", "Avenir", "Nunito Sans", "Helvetica Neue", "Arial", "sans-serif"),
+  "headings-font-weight" = 600
+)
+
+spex_css <- HTML(sprintf("
+  .bslib-page-title.navbar, .navbar.bslib-page-title { background: #fff !important;
+    border-bottom: 0; box-shadow: none; padding: 10px 16px 0; }
+  .bslib-page-title .container-fluid, .bslib-page-title > div { display: block; width: 100%%; }
+  .brand-header { width: 100%%; }
+  .brand-bar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; width: 100%%; }
+  .brand-bar img { height: 56px; width: auto; }
+  .brand-bar .brand-divider { width: 1px; height: 40px; background: #D9D9D9; }
+  .brand-bar .brand-title { color: #222; font-size: 1.25rem; font-weight: 600; line-height: 1.2; }
+  .brand-bar .brand-sub { color: #595959; font-size: .85rem; font-weight: 400; }
+  .brand-stripe { height: 6px; width: calc(100%% + 32px); margin: 10px -16px 0;
+    background: linear-gradient(90deg, %1$s 0%%, %1$s 55%%, %2$s 100%%); }
+  .nav-tabs .nav-link.active, .nav-tabs .nav-link.active:hover { color: %1$s !important;
+    border-top: 3px solid %1$s; font-weight: 600; }
+  .nav-tabs .nav-link { color: #595959; }
+  .card-header { background: #F2F2F2; border-bottom: 1px solid #D9D9D9; font-weight: 600; }
+  .bslib-sidebar-layout > .sidebar { background: #FAFAFA; border-right: 3px solid %1$s; }
+  .sidebar h6 { color: %1$s; font-weight: 700; margin-top: .5rem; }
+  .btn-default:not(.btn-primary) { border-color: %1$s; color: %1$s; }
+  .btn-default:not(.btn-primary):hover { background: %1$s; color: #fff; }
+  #run { color: #fff; font-weight: 600; letter-spacing: .02em; }
+  table.table th { color: #fff; background: %1$s; }
+  @media (max-width: 576px) { .brand-bar img { height: 32px; } .brand-bar .brand-divider { display: none; } }
+", spex_red, spex_orange))
+
 ui <- page_sidebar(
-  title = "Lactate step test: LT1 and LT2 (Log-Poly-ModDmax)",
-  theme = bs_theme(version = 5, bootswatch = "flatly"),
+  title = div(
+    class = "brand-header",
+    div(
+      class = "brand-bar",
+      img(src = "spexsg.png", alt = "SpexSG"),
+      img(src = "hpsi.png", alt = "HPSI"),
+      div(class = "brand-divider"),
+      div(
+        div(class = "brand-title", "Lactate Step Test: LT1 and LT2"),
+        div(class = "brand-sub", "Log-log LT1 and Log-Poly-ModDmax LT2 | HPSI Physiology")
+      )
+    ),
+    div(class = "brand-stripe")
+  ),
+  window_title = "Lactate Step Test | HPSI Physiology",
+  theme = spex_theme,
+  tags$head(tags$style(spex_css)),
   sidebar = sidebar(
     width = 340,
     textInput("athlete", "Athlete name", "Example athlete"),
