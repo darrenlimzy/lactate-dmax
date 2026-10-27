@@ -16,8 +16,8 @@ grid_vars <- c("step", "length_s", "power_w", "lactate", "hr", "partial")
 
 example_grid <- data.frame(
   step     = 0:10,
-  length_s = c(0, rep(240, 10)),
-  power_w  = c(0, 100, 125, 150, 175, 200, 225, 250, 275, 300, NA),
+  length_s = c(0, rep(240, 9), 90),
+  power_w  = c(0, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325),
   lactate  = c(1.1, 1.0, 0.9, 1.0, 1.2, 1.5, 2.1, 3.0, 4.6, 7.2, 9.1),
   hr       = c(72, 112, 119, 127, 136, 145, 155, 165, 175, 185, 190),
   partial  = c(rep(FALSE, 10), TRUE)
@@ -52,12 +52,19 @@ read_steps_file <- function(path) {
   )
 }
 
-# Checks the grid and turns it into the df_full shape
+# Drops the empty spare rows the grid keeps at the bottom
+filled_rows <- function(g) {
+  g[!(is.na(g$step) & is.na(g$length_s) & is.na(g$power_w) &
+        is.na(g$lactate) & is.na(g$hr)), , drop = FALSE]
+}
+
+# Checks the grid and turns it into the df_full shape. The partial row
+# holds the power the unfinished stage was set at and, as its stage
+# length, the time held; Wmax comes from those two numbers.
 steps_from_grid <- function(g) {
-  g <- g[!(is.na(g$step) & is.na(g$power_w) & is.na(g$lactate) & is.na(g$hr)), , drop = FALSE]
+  g <- filled_rows(g)
   if (!nrow(g)) stop("Enter the stage data first.")
-  partial <- as.logical(g$partial)
-  partial[is.na(partial)] <- FALSE
+  partial <- as_tick(g$partial)
   if (sum(partial) > 1) stop("Tick Partial for one row only (the final, unfinished stage).")
   out <- tibble::tibble(
     step       = as.integer(g$step),
@@ -68,20 +75,77 @@ steps_from_grid <- function(g) {
     is_partial = partial
   )
   if (anyNA(out$step)) stop("Every row needs a step number.")
+  if (anyDuplicated(out$step)) stop("Each step number can only appear once.")
+  if (anyNA(out$intensity)) stop("Every row needs a power value (0 for the baseline).")
   if (anyNA(out$lactate) || anyNA(out$heart_rate))
     stop("Every row needs a lactate and a heart rate value.")
-  if (anyNA(out$intensity[!out$is_partial]))
-    stop("Every row except the partial stage needs a power value.")
   if (!any(out$step == 0))
     stop("Add the resting baseline as step 0 with power 0.")
-  if (sum(out$step > 0 & !out$is_partial) < 4)
+  out <- out[order(out$step), ]
+  done <- out[out$step > 0 & !out$is_partial, ]
+  if (nrow(done) < 4)
     stop("At least 4 completed stages are needed for a 3rd-degree polynomial fit.")
+
+  last_complete <- done[nrow(done), ]
+  if (any(out$is_partial)) {
+    p <- out[out$is_partial, ]
+    if (p$step != max(out$step)) stop("The partial stage must be the last step.")
+    if (is.na(p$length) || p$length <= 0)
+      stop("Enter the time held in the partial stage (its Stage length, in seconds).")
+    if (is.na(last_complete$length) || last_complete$length <= 0)
+      stop("Enter the Stage length of the completed stages (e.g. 240 s).")
+    if (p$intensity <= last_complete$intensity)
+      stop("The partial stage's power (", p$intensity, " W) must be higher than the last ",
+           "completed stage (", last_complete$intensity, " W): enter the power it was set at.")
+    if (p$length >= last_complete$length)
+      stop("The partial stage's time held must be shorter than a full stage (",
+           round(last_complete$length * 60), " s).")
+    held_s <- p$length * 60
+    full_s <- last_complete$length * 60
+    W <- compute_wmax(last_complete$intensity, p$intensity, full_s, held_s)
+    how <- sprintf("%g W + (%g - %g W) x %g / %g s", last_complete$intensity,
+                   p$intensity, last_complete$intensity, held_s, full_s)
+  } else {
+    W <- last_complete$intensity
+    how <- "no partial stage: last completed stage"
+  }
+  attr(out, "Wmax") <- W
+  attr(out, "Wmax_how") <- how
   out
 }
 
+# Adds a blank stage after the last completed one (before the partial row,
+# if there is one) with the next step number and the same stage length
+add_stage <- function(g) {
+  g <- filled_rows(g)
+  if (!nrow(g)) return(blank_grid)
+  part <- which(as_tick(g$partial))
+  done <- if (length(part)) g[-part, , drop = FALSE] else g
+  last <- done[nrow(done), ]
+  new <- data.frame(
+    step = if (nrow(done)) max(done$step, na.rm = TRUE) + 1 else 0,
+    length_s = if (nrow(done) && !is.na(last$step) && last$step > 0) last$length_s else NA,
+    power_w = NA_real_, lactate = NA_real_, hr = NA_real_, partial = FALSE
+  )
+  if (length(part)) {
+    p <- g[part, , drop = FALSE]
+    p$step <- new$step + 1
+    rbind(done, new, p)
+  } else rbind(g, new)
+}
+
+# Partial comes back from the grid as TRUE/FALSE, 0/1 or text; make it logical
+as_tick <- function(x) tolower(trimws(as.character(x))) %in% c("true", "t", "1", "y", "yes")
+
 render_grid <- function(df) {
+  df <- data.frame(
+    step = as.numeric(df$step), length_s = as.numeric(df$length_s),
+    power_w = as.numeric(df$power_w), lactate = as.numeric(df$lactate),
+    hr = as.numeric(df$hr), partial = as_tick(df$partial)
+  )
   names(df) <- grid_cols
-  rhandsontable(df, rowHeaders = NULL, stretchH = "all", height = 380,
+  rhandsontable(df, rowHeaders = NULL, stretchH = "all",
+                height = 30 + 23 * (nrow(df) + 1),
                 minSpareRows = 1, useTypes = TRUE) |>
     hot_col("Step", format = "0") |>
     hot_col("Stage length (s)", format = "0") |>
@@ -133,6 +197,12 @@ spex_css <- HTML(sprintf("
   .data-card { max-width: 820px; border-top: 3px solid %1$s; }
   .handsontable th { background: #F2F2F2; color: #222; font-weight: 600; }
   .handsontable td { font-variant-numeric: tabular-nums; }
+  .btn-add { background: %1$s !important; color: #fff !important; border-color: %1$s !important; }
+  .wmax-box { margin: .25rem 0 .75rem; padding: .6rem .8rem; background: #fff;
+    border: 1px solid #D9D9D9; border-left: 3px solid %1$s; border-radius: 4px; }
+  .wmax-label { font-size: .8rem; color: #595959; font-weight: 600; text-transform: uppercase; }
+  .wmax-value { font-size: 1.5rem; font-weight: 700; color: %1$s; line-height: 1.2; }
+  .wmax-how { font-size: .78rem; color: #595959; }
   .partial-note { margin-top: .75rem; padding: .6rem .8rem; font-size: .85rem; color: #333;
     background: #FFF5F6; border-left: 3px solid %1$s; border-radius: 4px; }
   @media (max-width: 576px) { .brand-bar img { height: 32px; } .brand-bar .brand-divider { display: none; } }
@@ -160,11 +230,7 @@ ui <- page_sidebar(
     width = 340,
     textInput("athlete", "Athlete name", "Example athlete"),
     numericInput("hr_max", "Max heart rate (bpm)", 195, min = 100, max = 230),
-    h6("Final partial stage (for Wmax)"),
-    numericInput("last_complete", "Last completed stage power (W)", 300),
-    numericInput("next_stage", "Partial stage power (W)", 325),
-    numericInput("stage_sec", "Full stage duration (s)", 240),
-    numericInput("held_sec", "Time held in partial stage (s)", 90, min = 0),
+    uiOutput("wmax_box"),
     checkboxInput("include_partial", "Include the partial stage in the curve fit", TRUE),
     helpText("Untick if the steep top-end point makes the polynomial wiggle.",
              "The Wmax line still shows either way."),
@@ -191,19 +257,22 @@ ui <- page_sidebar(
         card_body(
           fillable = FALSE,
           p(class = "small text-muted mb-2",
-            "Type into the grid, or paste straight from Excel: click the top-left cell, then",
-            "Ctrl+V (Cmd+V on a Mac). Right-click a row to insert or delete rows.",
-            "Step 0 is the resting baseline (length 0, power 0)."),
+            "One row per stage. Type into the grid, or paste straight from Excel: click the",
+            "top-left cell, then Ctrl+V (Cmd+V on a Mac). Use Add stage for another row;",
+            "right-click a row to insert or delete it. Step 0 is the resting baseline",
+            "(length 0, power 0)."),
           rHandsontableOutput("grid"),
+          actionButton("add_stage_below", "Add stage", icon = icon("plus"),
+                       class = "btn-sm btn-add mt-2"),
           div(
             class = "partial-note",
             strong("* Partial: "),
-            "tick the final stage, the one the athlete started but could not finish.",
-            "Leave its power blank: the app replaces it with Wmax, worked out from the",
-            "sidebar as last completed power + (partial stage power - last completed",
-            "power) x time held / full stage duration. Tick one row only. To keep the",
-            "point on the plot but out of the curve fit, untick",
-            em("Include the partial stage in the curve fit"), "in the sidebar."
+            "tick the last stage if the athlete started it but could not finish it.",
+            "For that row, enter the power the stage was set at and, as its Stage length,",
+            "how long the athlete held it (in seconds). The app then works out Wmax:",
+            "last completed power + (partial stage power - last completed power) x time held",
+            "/ full stage length, and plots the partial point at Wmax. Tick one row only;",
+            "leave it unticked if the test ended on a completed stage."
           ),
           div(
             class = "mt-3",
@@ -248,7 +317,9 @@ log-log method. Both are computed with the R package
 baseline excluded from the fit).
 
 **Wmax** = last completed power + (partial stage power - last completed power)
-x time held / stage duration.
+x time held / full stage length. The partial stage's power and time held come
+from the row ticked Partial; the full stage length is that of the last completed
+stage. The partial point is plotted (and fitted) at Wmax.
 
 **Zones** (Burnley & Jones 2007 intensity domains):
 
@@ -287,9 +358,13 @@ server <- function(input, output, session) {
     g <- hot_to_r(input$grid)
     names(g) <- grid_vars
     current(g)
+    # Typing or pasting past the last row adds rows; redraw so the grid
+    # grows to fit them instead of scrolling inside its box
+    if (nrow(filled_rows(g)) > nrow(filled_rows(grid_seed()$df))) load_grid(filled_rows(g))
   })
 
   observeEvent(input$load_example, load_grid(example_grid))
+  observeEvent(input$add_stage_below, load_grid(add_stage(current())))
   observeEvent(input$clear_grid, load_grid(blank_grid))
   observeEvent(input$csv, {
     df <- tryCatch(read_steps_file(input$csv$datapath), error = function(e) e)
@@ -308,13 +383,19 @@ server <- function(input, output, session) {
     }
   )
 
-  wmax <- reactive({
-    req(input$last_complete, input$next_stage, input$stage_sec)
-    compute_wmax(input$last_complete, input$next_stage,
-                 input$stage_sec, input$held_sec %||% 0)
-  })
-
   parsed <- reactive(tryCatch(steps_from_grid(current()), error = function(e) e))
+
+  output$wmax_box <- renderUI({
+    d <- parsed()
+    if (inherits(d, "error"))
+      div(class = "wmax-box", div(class = "wmax-label", "Wmax"),
+          div(class = "wmax-how", "Complete the stage data to see Wmax."))
+    else
+      div(class = "wmax-box",
+          div(class = "wmax-label", "Wmax"),
+          div(class = "wmax-value", round(attr(d, "Wmax"), 1), " W"),
+          div(class = "wmax-how", attr(d, "Wmax_how")))
+  })
 
   output$parse_msg <- renderUI({
     d <- parsed()
@@ -330,7 +411,7 @@ server <- function(input, output, session) {
   result <- eventReactive(input$run, {
     d <- parsed()
     if (inherits(d, "error")) return(d)
-    W <- wmax()
+    W <- attr(d, "Wmax")
     d$intensity[d$is_partial] <- W
     out <- tryCatch(
       suppressMessages(analyse_step_test(d, input$athlete, input$hr_max, W,
