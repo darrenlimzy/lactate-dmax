@@ -226,6 +226,19 @@ ui <- page_sidebar(
   window_title = "Lactate Step Test | HPSI Physiology",
   theme = spex_theme,
   tags$head(tags$style(spex_css)),
+  tags$script(HTML("
+    $(function() {
+      Shiny.addCustomMessageHandler('save-file', function(m) {
+        var bin = atob(m.data), bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var url = URL.createObjectURL(new Blob([bytes], {type: m.mime}));
+        var a = document.createElement('a');
+        a.href = url; a.download = m.name;
+        document.body.appendChild(a); a.click();
+        setTimeout(function() { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      });
+    });
+  ")),
   sidebar = sidebar(
     width = 340,
     textInput("athlete", "Athlete name", "Example athlete"),
@@ -250,7 +263,7 @@ ui <- page_sidebar(
               class = "d-flex flex-wrap gap-2",
               actionButton("load_example", "Example", class = "btn-sm"),
               actionButton("clear_grid", "Clear", class = "btn-sm"),
-              downloadButton("template", "CSV template", class = "btn-sm")
+              actionButton("template", "CSV template", icon = icon("download"), class = "btn-sm")
             )
           )
         ),
@@ -305,11 +318,11 @@ ui <- page_sidebar(
         card_header("Downloads"),
         div(
           class = "d-flex flex-wrap gap-2",
-          downloadButton("dl_curve", "Curve (PNG)"),
-          downloadButton("dl_loglog", "Log-log (PNG)"),
-          downloadButton("dl_tables", "Tables (PNG)"),
-          downloadButton("dl_csv", "Results (CSV)"),
-          downloadButton("dl_json", "Results (JSON)")
+          actionButton("dl_curve", "Curve (PNG)", icon = icon("download")),
+          actionButton("dl_loglog", "Log-log (PNG)", icon = icon("download")),
+          actionButton("dl_tables", "Tables (PNG)", icon = icon("download")),
+          actionButton("dl_csv", "Results (CSV)", icon = icon("download")),
+          actionButton("dl_json", "Results (JSON)", icon = icon("download"))
         )
       )
     ),
@@ -380,15 +393,25 @@ server <- function(input, output, session) {
     else load_grid(df)
   })
 
-  output$template <- downloadHandler(
-    filename = "lactate_step_test_template.csv",
-    content = function(file) {
+  # Shinylive serves downloadHandler files through its service worker, which
+  # Chrome's download manager bypasses (the download is cancelled). Files are
+  # therefore written here and handed to the browser to save as a blob.
+  save_file <- function(name, mime, writer) {
+    f <- tempfile()
+    writer(f)
+    session$sendCustomMessage("save-file", list(
+      name = name, mime = mime,
+      data = jsonlite::base64_enc(readBin(f, "raw", file.info(f)$size))
+    ))
+  }
+
+  observeEvent(input$template, save_file(
+    "lactate_step_test_template.csv", "text/csv", function(file) {
       t <- example_grid
-      t$power_w <- ifelse(is.na(t$power_w), "", t$power_w)
       t$partial <- ifelse(t$partial, "Y", "N")
       write.csv(t, file, row.names = FALSE, quote = FALSE)
     }
-  )
+  ))
 
   parsed <- reactive(tryCatch(steps_from_grid(current()), error = function(e) e))
 
@@ -455,24 +478,20 @@ server <- function(input, output, session) {
 
   stem <- function() gsub("[^A-Za-z0-9]+", "_", trimws(ok()$meta$athlete))
 
-  output$dl_curve <- downloadHandler(
-    filename = function() paste0(stem(), "_lactate_curve.png"),
-    content = function(file)
-      ggsave(file, ok()$curve_plot, width = 10, height = 6, dpi = 200, bg = "white")
-  )
-  output$dl_loglog <- downloadHandler(
-    filename = function() paste0(stem(), "_loglog.png"),
-    content = function(file)
-      ggsave(file, ok()$loglog_plot, width = 10, height = 6, dpi = 200, bg = "white")
-  )
-  output$dl_tables <- downloadHandler(
-    filename = function() paste0(stem(), "_lactate_tables.png"),
-    content = function(file)
-      ggsave(file, ok()$tables_grob, width = 7, height = 5, dpi = 200, bg = "white")
-  )
-  output$dl_csv <- downloadHandler(
-    filename = function() paste0(stem(), "_lactate_results.csv"),
-    content = function(file) {
+  observeEvent(input$dl_curve, save_file(
+    paste0(stem(), "_lactate_curve.png"), "image/png", function(file)
+      ggsave(file, ok()$curve_plot, width = 10, height = 6, dpi = 200, bg = "white", device = "png")
+  ))
+  observeEvent(input$dl_loglog, save_file(
+    paste0(stem(), "_loglog.png"), "image/png", function(file)
+      ggsave(file, ok()$loglog_plot, width = 10, height = 6, dpi = 200, bg = "white", device = "png")
+  ))
+  observeEvent(input$dl_tables, save_file(
+    paste0(stem(), "_lactate_tables.png"), "image/png", function(file)
+      ggsave(file, ok()$tables_grob, width = 7, height = 5, dpi = 200, bg = "white", device = "png")
+  ))
+  observeEvent(input$dl_csv, save_file(
+    paste0(stem(), "_lactate_results.csv"), "text/csv", function(file) {
       r <- ok()
       lt <- r$threshold_table
       lines <- c(
@@ -494,16 +513,15 @@ server <- function(input, output, session) {
       )
       writeLines(lines, file)
     }
-  )
-  output$dl_json <- downloadHandler(
-    filename = function() paste0(stem(), "_lactate_results.json"),
-    content = function(file) {
+  ))
+  observeEvent(input$dl_json, save_file(
+    paste0(stem(), "_lactate_results.json"), "application/json", function(file) {
       r <- ok()
       writeLines(toJSON(results_list(r, r$meta$athlete, r$meta$hr_max, r$Wmax,
                                      r$meta$include_partial),
                         auto_unbox = TRUE, pretty = TRUE, digits = NA), file)
     }
-  )
+  ))
 }
 
 shinyApp(ui, server)
